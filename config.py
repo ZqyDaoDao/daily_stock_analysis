@@ -218,7 +218,8 @@ class Config:
             self.wechat_webhook_url or 
             self.feishu_webhook_url or
             (self.telegram_bot_token and self.telegram_chat_id) or
-            (self.email_sender and self.email_password)
+            (self.email_sender and self.email_password) or
+            self.custom_webhook_urls  # 自定义 Webhook（包括钉钉等）
         )
         if not has_notification:
             warnings.append("提示：未配置通知渠道，将不发送推送通知")
@@ -257,3 +258,4 @@ if __name__ == "__main__":
         print("\n配置验证结果:")
         for w in warnings:
             print(f"  - {w}")
+

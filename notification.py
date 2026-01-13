@@ -1517,6 +1517,9 @@ class NotificationService:
                     'User-Agent': 'StockAnalysis/1.0'
                 }
                 
+                logger.debug(f"自定义 Webhook {i+1} URL: {url}")
+                logger.debug(f"自定义 Webhook {i+1} Payload: {payload}")
+                
                 response = requests.post(
                     url,
                     json=payload,
@@ -1524,15 +1527,39 @@ class NotificationService:
                     timeout=30
                 )
                 
+                logger.debug(f"自定义 Webhook {i+1} 响应状态码: {response.status_code}")
+                logger.debug(f"自定义 Webhook {i+1} 响应内容: {response.text}")
+                
                 if response.status_code == 200:
-                    logger.info(f"自定义 Webhook {i+1} 推送成功")
-                    success_count += 1
+                    # 检查钉钉响应格式（钉钉即使返回 200，也可能在响应体中返回错误）
+                    try:
+                        result = response.json()
+                        # 钉钉格式：{"errcode": 0, "errmsg": "ok"}
+                        if 'errcode' in result:
+                            errcode = result.get('errcode', -1)
+                            errmsg = result.get('errmsg', '未知错误')
+                            if errcode == 0:
+                                logger.info(f"自定义 Webhook {i+1}（钉钉）推送成功")
+                                success_count += 1
+                            else:
+                                logger.error(f"自定义 Webhook {i+1}（钉钉）推送失败: errcode={errcode}, errmsg={errmsg}")
+                                logger.error(f"完整响应: {result}")
+                        else:
+                            # 非钉钉格式，直接认为成功
+                            logger.info(f"自定义 Webhook {i+1} 推送成功")
+                            success_count += 1
+                    except ValueError:
+                        # 响应不是 JSON，但状态码是 200，认为成功
+                        logger.info(f"自定义 Webhook {i+1} 推送成功（非 JSON 响应）")
+                        success_count += 1
                 else:
                     logger.error(f"自定义 Webhook {i+1} 推送失败: HTTP {response.status_code}")
-                    logger.debug(f"响应内容: {response.text[:200]}")
+                    logger.error(f"响应内容: {response.text[:500]}")
                     
             except Exception as e:
                 logger.error(f"自定义 Webhook {i+1} 推送异常: {e}")
+                import traceback
+                logger.debug(traceback.format_exc())
         
         logger.info(f"自定义 Webhook 推送完成：成功 {success_count}/{len(self._custom_webhook_urls)}")
         return success_count > 0
@@ -1547,11 +1574,23 @@ class NotificationService:
         
         # 钉钉机器人
         if 'dingtalk' in url_lower or 'oapi.dingtalk.com' in url_lower:
+            # 钉钉 markdown 消息限制：
+            # - title 最大 50 字符
+            # - text 最大 5000 字符
+            # 如果超长，需要截断或分批发送
+            title = "股票分析报告"
+            text = content
+            
+            # 检查长度限制
+            if len(text) > 5000:
+                logger.warning(f"钉钉消息内容超长({len(text)}字符)，将截断至5000字符")
+                text = text[:5000] + "\n\n...(内容过长已截断)"
+            
             return {
                 "msgtype": "markdown",
                 "markdown": {
-                    "title": "股票分析报告",
-                    "text": content
+                    "title": title[:50],  # 确保标题不超过50字符
+                    "text": text
                 }
             }
         
@@ -1848,3 +1887,4 @@ if __name__ == "__main__":
         print(f"推送结果: {'成功' if success else '失败'}")
     else:
         print("\n通知渠道未配置，跳过推送测试")
+
