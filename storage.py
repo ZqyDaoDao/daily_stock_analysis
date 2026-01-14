@@ -15,6 +15,7 @@ import logging
 from datetime import datetime, date, timedelta
 from typing import Optional, List, Dict, Any
 from pathlib import Path
+import sys
 
 import pandas as pd
 from sqlalchemy import (
@@ -41,6 +42,28 @@ from sqlalchemy.exc import IntegrityError
 from config import get_config
 
 logger = logging.getLogger(__name__)
+
+# 检查并替换 sqlite3 模块（如果内置 sqlite3 不可用，使用 pysqlite3）
+try:
+    import sqlite3
+    # 测试是否可以实际使用
+    try:
+        sqlite3.connect(':memory:').close()
+        logger.debug("使用内置 sqlite3 模块")
+    except Exception as e:
+        logger.warning(f"内置 sqlite3 无法使用: {e}，尝试使用 pysqlite3")
+        raise ImportError("内置 sqlite3 无法使用")
+except ImportError:
+    try:
+        import pysqlite3
+        # 替换 sys.modules 中的 sqlite3，让 SQLAlchemy 使用 pysqlite3
+        sys.modules['sqlite3'] = pysqlite3
+        # 同时替换 sqlite3.dbapi2
+        sys.modules['sqlite3.dbapi2'] = pysqlite3.dbapi2
+        logger.info("已切换到 pysqlite3（通过模块替换）")
+    except ImportError:
+        logger.error("sqlite3 和 pysqlite3 都不可用，请安装 pysqlite3: pip install pysqlite3")
+        raise
 
 # SQLAlchemy ORM 基类
 Base = declarative_base()
@@ -506,3 +529,4 @@ if __name__ == "__main__":
     # 测试获取上下文
     context = db.get_analysis_context('600519')
     print(f"分析上下文: {context}")
+

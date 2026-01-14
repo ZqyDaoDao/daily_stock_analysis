@@ -32,3 +32,4 @@ fake-useragent>=1.4.0       # 随机 User-Agent 防封禁
 
 # 数据库
 # SQLite 是 Python 内置，无需额外安装
+pysqlite3>=0.5.0  # SQLite 支持（Python 3.13 可能需要，如果内置 sqlite3 不可用）
