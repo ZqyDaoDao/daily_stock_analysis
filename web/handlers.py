@@ -21,7 +21,7 @@ import re
 import logging
 from http import HTTPStatus
 from datetime import datetime
-from typing import Dict, Any, TYPE_CHECKING
+from typing import Dict, Any, Optional, TYPE_CHECKING
 
 from web.services import get_config_service, get_analysis_service
 from web.templates import render_config_page
@@ -174,15 +174,15 @@ class ApiHandler:
         
         code = code_list[0].strip()
 
-        # 验证股票代码格式：A股(6位数字) / 港股(hk+5位数字) / 美股(1-5个大写字母)
-        code = code.lower()
+        # 验证股票代码格式：A股(6位数字) / 港股(HK+5位数字) / 美股(1-5个大写字母+.+2个后缀字母)
+        code = code.upper()
         is_a_stock = re.match(r'^\d{6}$', code)
-        is_hk_stock = re.match(r'^hk\d{5}$', code)
-        is_us_stock = re.match(r'^[A-Z]{1,5}(\.[A-Z])?$', code.upper())
+        is_hk_stock = re.match(r'^HK\d{5}$', code)
+        is_us_stock = re.match(r'^[A-Z]{1,5}(\.[A-Z]{1,2})?$', code.upper())
 
         if not (is_a_stock or is_hk_stock or is_us_stock):
             return JsonResponse(
-                {"success": False, "error": f"无效的股票代码格式: {code} (A股6位数字 / 港股hk+5位数字 / 美股1-5个字母)"},
+                {"success": False, "error": f"无效的股票代码格式: {code} (A股6位数字 / 港股HK+5位数字 / 美股1-5个字母)"},
                 status=HTTPStatus.BAD_REQUEST
             )
         
@@ -190,9 +190,18 @@ class ApiHandler:
         report_type_str = query.get("report_type", ["simple"])[0]
         report_type = ReportType.from_str(report_type_str)
         
+        # 是否保存上下文快照（可选，默认读取配置）
+        save_snapshot = None
+        if "save_context_snapshot" in query:
+            save_snapshot = self._parse_bool(query.get("save_context_snapshot", [""])[0])
+
         # 提交异步分析任务
         try:
-            result = self.analysis_service.submit_analysis(code, report_type=report_type)
+            result = self.analysis_service.submit_analysis(
+                code,
+                report_type=report_type,
+                save_context_snapshot=save_snapshot
+            )
             return JsonResponse(result)
         except Exception as e:
             logger.error(f"[ApiHandler] 提交分析任务失败: {e}")
@@ -200,6 +209,51 @@ class ApiHandler:
                 {"success": False, "error": f"提交任务失败: {str(e)}"},
                 status=HTTPStatus.INTERNAL_SERVER_ERROR
             )
+
+    def handle_analysis_history(self, query: Dict[str, list]) -> Response:
+        """
+        查询分析历史 GET /analysis/history
+
+        Args:
+            query: URL 查询参数 (code, query_id, days, limit)
+        """
+        code = query.get("code", [""])[0].strip() or None
+        query_id = query.get("query_id", [""])[0].strip() or None
+
+        try:
+            days = int(query.get("days", ["30"])[0])
+        except ValueError:
+            days = 30
+
+        try:
+            limit = int(query.get("limit", ["50"])[0])
+        except ValueError:
+            limit = 50
+
+        history = self.analysis_service.get_analysis_history(
+            code=code,
+            query_id=query_id,
+            days=days,
+            limit=limit
+        )
+
+        return JsonResponse({
+            "success": True,
+            "records": history,
+            "count": len(history)
+        })
+
+    @staticmethod
+    def _parse_bool(value: str) -> Optional[bool]:
+        """
+        解析布尔参数
+        """
+        text = (value or "").strip().lower()
+        if text in {"1", "true", "yes", "y", "on"}:
+            return True
+        if text in {"0", "false", "no", "n", "off"}:
+            return False
+        return None
     
     def handle_tasks(self, query: Dict[str, list]) -> Response:
         """

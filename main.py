@@ -22,19 +22,25 @@ A股自选股智能分析系统 - 主调度程序
 - 买点偏好：缩量回踩 MA5/MA10 支撑
 """
 import os
+from src.config import setup_env
+setup_env()
 
-# 代理配置 - 仅在本地环境使用，GitHub Actions 不需要
-if os.getenv("GITHUB_ACTIONS") != "true":
-    # 本地开发环境，如需代理请取消注释或修改端口
-    # os.environ["http_proxy"] = "http://127.0.0.1:10809"
-    # os.environ["https_proxy"] = "http://127.0.0.1:10809"
-    pass
+# 代理配置 - 通过 USE_PROXY 环境变量控制，默认关闭
+# GitHub Actions 环境自动跳过代理配置
+if os.getenv("GITHUB_ACTIONS") != "true" and os.getenv("USE_PROXY", "false").lower() == "true":
+    # 本地开发环境，启用代理（可在 .env 中配置 PROXY_HOST 和 PROXY_PORT）
+    proxy_host = os.getenv("PROXY_HOST", "127.0.0.1")
+    proxy_port = os.getenv("PROXY_PORT", "10809")
+    proxy_url = f"http://{proxy_host}:{proxy_port}"
+    os.environ["http_proxy"] = proxy_url
+    os.environ["https_proxy"] = proxy_url
 
 import argparse
 import logging
 import sys
 import time
 from datetime import datetime, timezone, timedelta, date
+import uuid
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import List, Optional
@@ -261,6 +267,12 @@ def parse_arguments() -> argparse.Namespace:
         default=None,
         help='指定选股日期 YYYY-MM-DD（默认今天），支持历史日期选股'
     )
+    parser.add_argument(
+        '--no-context-snapshot',
+        action='store_true',
+        default=False,
+        help='不保存分析上下文快照'
+    )
     
     return parser.parse_args()
 
@@ -486,9 +498,16 @@ def run_full_analysis(
             config.single_stock_notify = True
         
         # 创建调度器
+        save_context_snapshot = None
+        if getattr(args, 'no_context_snapshot', False):
+            save_context_snapshot = False
+        query_id = uuid.uuid4().hex
         pipeline = StockAnalysisPipeline(
             config=config,
-            max_workers=args.workers
+            max_workers=args.workers,
+            query_id=query_id,
+            query_source="cli",
+            save_context_snapshot=save_context_snapshot
         )
         
         # 1. 运行个股分析
@@ -511,7 +530,8 @@ def run_full_analysis(
             review_result = run_market_review(
                 notifier=pipeline.notifier,
                 analyzer=pipeline.analyzer,
-                search_service=pipeline.search_service
+                search_service=pipeline.search_service,
+                send_notification=not args.no_notify
             )
             # 如果有结果，赋值给 market_report 用于后续飞书文档生成
             if review_result:
@@ -557,7 +577,8 @@ def run_full_analysis(
                 if doc_url:
                     logger.info(f"飞书云文档创建成功: {doc_url}")
                     # 可选：将文档链接也推送到群里
-                    pipeline.notifier.send(f"[{now.strftime('%Y-%m-%d %H:%M')}] 复盘文档创建成功: {doc_url}")
+                    if not args.no_notify:
+                        pipeline.notifier.send(f"[{now.strftime('%Y-%m-%d %H:%M')}] 复盘文档创建成功: {doc_url}")
 
         except Exception as e:
             logger.error(f"飞书文档生成失败: {e}")
@@ -673,10 +694,20 @@ def main() -> int:
                     serpapi_keys=config.serpapi_keys
                 )
             
-            if config.gemini_api_key:
+            if config.gemini_api_key or config.openai_api_key:
                 analyzer = GeminiAnalyzer(api_key=config.gemini_api_key)
+                if not analyzer.is_available():
+                    logger.warning("AI 分析器初始化后不可用，请检查 API Key 配置")
+                    analyzer = None
+            else:
+                logger.warning("未检测到 API Key (Gemini/OpenAI)，将仅使用模板生成报告")
             
-            run_market_review(notifier, analyzer, search_service)
+            run_market_review(
+                notifier=notifier, 
+                analyzer=analyzer, 
+                search_service=search_service,
+                send_notification=not args.no_notify
+            )
             return 0
         
         # 模式2: 定时任务模式
