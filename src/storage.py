@@ -10,12 +10,16 @@ A股自选股智能分析系统 - 存储层
 3. 提供数据存取接口
 4. 实现智能更新逻辑（断点续传）
 """
+from __future__ import annotations
+import json
 
 import atexit
 import logging
 from datetime import datetime, date, timedelta
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, TYPE_CHECKING
 from pathlib import Path
+if TYPE_CHECKING:
+    from typing import ForwardRef
 
 import pandas as pd
 from sqlalchemy import (
@@ -459,7 +463,170 @@ class DatabaseManager:
             context['ma_status'] = self._analyze_ma_status(today_data)
         
         return context
-    
+
+        # ==================== 选股结果相关方法 ====================
+
+    def save_screening_result(
+            self,
+            code: str,
+            name: str,
+            tech_score: float,
+            tech_reasons: List[str],
+            ai_result: Optional[Any] = None,
+            screen_date: Optional[date] = None
+    ) -> bool:
+        """
+        保存单条选股结果到数据库
+
+        Args:
+            code: 股票代码
+            name: 股票名称
+            tech_score: 技术评分
+            tech_reasons: 技术面理由列表
+            ai_result: AI分析结果（可选）
+            screen_date: 选股日期（默认今天）
+
+        Returns:
+            是否保存成功
+        """
+        if screen_date is None:
+            screen_date = date.today()
+
+        try:
+            with self.get_session() as session:
+                # 检查是否已存在
+                existing = session.query(ScreeningResultDB).filter(
+                    and_(
+                        ScreeningResultDB.code == code,
+                        ScreeningResultDB.screen_date == screen_date
+                    )
+                ).first()
+
+                if existing:
+                    # 更新现有记录
+                    existing.tech_score = tech_score
+                    existing.tech_reasons = json.dumps(tech_reasons, ensure_ascii=False)
+                    if ai_result:
+                        existing.ai_sentiment_score = ai_result.sentiment_score
+                        existing.ai_operation_advice = ai_result.operation_advice
+                        existing.ai_trend_prediction = ai_result.trend_prediction
+                        existing.ai_analysis_summary = ai_result.analysis_summary[
+                                                       :2000] if ai_result.analysis_summary else None
+                    existing.screen_time = datetime.now()
+                else:
+                    # 创建新记录
+                    record = ScreeningResultDB(
+                        code=code,
+                        name=name,
+                        tech_score=tech_score,
+                        tech_reasons=json.dumps(tech_reasons, ensure_ascii=False),
+                        ai_sentiment_score=ai_result.sentiment_score if ai_result else None,
+                        ai_operation_advice=ai_result.operation_advice if ai_result else None,
+                        ai_trend_prediction=ai_result.trend_prediction if ai_result else None,
+                        ai_analysis_summary=ai_result.analysis_summary[
+                                            :2000] if ai_result and ai_result.analysis_summary else None,
+                        screen_date=screen_date,
+                    )
+                    session.add(record)
+
+                session.commit()
+                return True
+
+        except Exception as e:
+            logger.error(f"保存选股结果失败 {code}: {e}")
+            return False
+
+    def get_screening_results(
+            self,
+            screen_date: Optional[date] = None,
+            limit: Optional[int] = None
+    ) -> List[ScreeningResultDB]:
+        """
+        获取指定日期的选股结果
+
+        Args:
+            screen_date: 选股日期（默认今天）
+            limit: 返回结果数量限制
+
+        Returns:
+            ScreeningResultDB 对象列表（按技术评分降序）
+        """
+        if screen_date is None:
+            screen_date = date.today()
+
+        try:
+            with self.get_session() as session:
+                query = session.query(ScreeningResultDB).filter(
+                    ScreeningResultDB.screen_date == screen_date
+                ).order_by(desc(ScreeningResultDB.tech_score))
+
+                if limit:
+                    query = query.limit(limit)
+
+                results = query.all()
+                return list(results)
+
+        except Exception as e:
+            logger.error(f"获取选股结果失败: {e}")
+            return []
+
+    def has_today_screening(self, target_date: Optional[date] = None) -> bool:
+        """
+        检查指定日期是否已有选股结果
+
+        Args:
+            target_date: 目标日期（默认今天）
+
+        Returns:
+            是否存在选股结果
+        """
+        if target_date is None:
+            target_date = date.today()
+
+        try:
+            with self.get_session() as session:
+                count = session.query(ScreeningResultDB).filter(
+                    ScreeningResultDB.screen_date == target_date
+                ).count()
+                return count > 0
+
+        except Exception as e:
+            logger.error(f"检查选股结果失败: {e}")
+            return False
+
+    def get_screening_result_by_code(
+            self,
+            code: str,
+            screen_date: Optional[date] = None
+    ) -> Optional[ScreeningResultDB]:
+        """
+        获取指定股票在指定日期的选股结果
+
+        Args:
+            code: 股票代码
+            screen_date: 选股日期（默认今天）
+
+        Returns:
+            ScreeningResultDB 对象或 None
+        """
+        if screen_date is None:
+            screen_date = date.today()
+
+        try:
+            with self.get_session() as session:
+                result = session.query(ScreeningResultDB).filter(
+                    and_(
+                        ScreeningResultDB.code == code,
+                        ScreeningResultDB.screen_date == screen_date
+                    )
+                ).first()
+
+                return result
+
+        except Exception as e:
+            logger.error(f"获取股票选股结果失败 {code}: {e}")
+            return None
+
     def _analyze_ma_status(self, data: StockDaily) -> str:
         """
         分析均线形态
@@ -484,6 +651,63 @@ class DatabaseManager:
             return "短期走弱 🔽"
         else:
             return "震荡整理 ↔️"
+
+class ScreeningResultDB(Base):
+    """
+    选股结果数据库模型
+
+    存储每日选股结果，包含技术评分和AI分析结果
+    支持多股票、多日期的唯一约束
+    """
+    __tablename__ = 'screening_results'
+
+    # 主键
+    id = Column(Integer, primary_key=True, autoincrement=True)
+
+    # 股票信息
+    code = Column(String(10), nullable=False, index=True)
+    name = Column(String(50))
+
+    # 技术评分
+    tech_score = Column(Float)
+    tech_reasons = Column(String(1000))  # JSON 字符串存储理由列表
+
+    # AI 分析结果
+    ai_sentiment_score = Column(Integer)
+    ai_operation_advice = Column(String(20))
+    ai_trend_prediction = Column(String(20))
+    ai_analysis_summary = Column(String(2000))
+
+    # 选股时间
+    screen_date = Column(Date, nullable=False, index=True)
+    screen_time = Column(DateTime, default=datetime.now)
+
+    # 元数据
+    created_at = Column(DateTime, default=datetime.now)
+
+    # 唯一约束：同一股票同一天只能有一条选股记录
+    __table_args__ = (
+        UniqueConstraint('code', 'screen_date', name='uix_screening_code_date'),
+        Index('ix_screening_date', 'screen_date'),
+    )
+
+    def __repr__(self):
+        return f"<ScreeningResultDB(code={self.code}, name={self.name}, screen_date={self.screen_date})>"
+
+    def to_dict(self) -> Dict[str, Any]:
+        """转换为字典"""
+        return {
+            'code': self.code,
+            'name': self.name,
+            'tech_score': self.tech_score,
+            'tech_reasons': self.tech_reasons,
+            'ai_sentiment_score': self.ai_sentiment_score,
+            'ai_operation_advice': self.ai_operation_advice,
+            'ai_trend_prediction': self.ai_trend_prediction,
+            'ai_analysis_summary': self.ai_analysis_summary,
+            'screen_date': self.screen_date,
+            'screen_time': self.screen_time,
+        }
 
 
 # 便捷函数

@@ -34,7 +34,7 @@ import argparse
 import logging
 import sys
 import time
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone, timedelta, date
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import List, Optional
@@ -46,6 +46,7 @@ from src.core.pipeline import StockAnalysisPipeline
 from src.core.market_review import run_market_review
 from src.search_service import SearchService
 from src.analyzer import GeminiAnalyzer
+from screeners.stock_screener import StockScreener, ScreeningMode
 
 # 配置日志格式
 LOG_FORMAT = '%(asctime)s | %(levelname)-8s | %(name)-20s | %(message)s'
@@ -201,8 +202,272 @@ def parse_arguments() -> argparse.Namespace:
         action='store_true',
         help='仅启动 WebUI 服务，不自动执行分析（通过 /analysis API 手动触发）'
     )
+
+    parser.add_argument(
+        '--screen',
+        action='store_true',
+        help='运行全市场选股'
+    )
+
+    parser.add_argument(
+        '--screen-mode',
+        type=str,
+        default='full',
+        choices=['tech_only', 'ai_only', 'full'],
+        help='选股模式：tech_only(仅技术), ai_only(仅AI), full(完整流程)'
+    )
+
+    parser.add_argument(
+        '--auto-analyze',
+        action='store_true',
+        help='选股后自动对选中股票进行深度分析'
+    )
+
+    parser.add_argument(
+        '--force-refresh',
+        action='store_true',
+        help='强制刷新（忽略缓存）'
+    )
+
+    parser.add_argument(
+        '--strategy-screen',
+        action='store_true',
+        help='使用策略选股（StockTradebyZ 战法）'
+    )
+
+    parser.add_argument(
+        '--strategy',
+        type=str,
+        help='指定运行单个策略（如：少妇战法）'
+    )
+
+    parser.add_argument(
+        '--strategy-config',
+        type=str,
+        default='./selector_configs.json',
+        help='策略配置文件路径'
+    )
+
+    parser.add_argument(
+        '--data-dir',
+        type=str,
+        default='./data',
+        help='K线数据目录'
+    )
+
+    parser.add_argument(
+        '--date',
+        type=str,
+        default=None,
+        help='指定选股日期 YYYY-MM-DD（默认今天），支持历史日期选股'
+    )
     
     return parser.parse_args()
+
+
+def run_stock_screening(
+        config: Config,
+        args: argparse.Namespace,
+        notifier: NotificationService,
+        target_date: Optional[date] = None  # 新增参数
+) -> Optional[List]:
+    """
+    执行全市场选股
+
+    Args:
+        config: 配置对象
+        args: 命令行参数
+        notifier: 通知服务
+        target_date: 目标选股日期（None表示今天）
+
+    Returns:
+        选股结果列表
+    """
+    logger.info("=" * 60)
+    logger.info("开始执行全市场选股")
+    logger.info("=" * 60)
+
+    try:
+        # 创建选股器
+        screener = StockScreener(
+            max_workers=args.workers or config.max_workers
+        )
+
+        # 确定选股模式
+        mode_map = {
+            'tech_only': ScreeningMode.TECH_ONLY,
+            'ai_only': ScreeningMode.AI_ONLY,
+            'full': ScreeningMode.FULL,
+        }
+        mode = mode_map.get(args.screen_mode, ScreeningMode.FULL)
+
+        logger.info(f"选股模式: {mode.value}")
+        logger.info(f"自动分析: {'是' if args.auto_analyze else '否'}")
+
+        # 执行选股
+        results = screener.screen_market(
+            mode=mode,
+            force_refresh=args.force_refresh,
+            target_date=target_date  # 新增参数
+        )
+
+        if not results:
+            logger.info("未选出符合条件的股票")
+            if notifier.is_available():
+                notifier.send("🎯 全市场选股完成\n\n今日未选出符合条件的股票。")
+            return []
+
+        # 发送选股报告
+        logger.info("生成选股报告...")
+        # 将 target_date 转换为字符串格式
+        report_date_str = target_date.strftime('%Y-%m-%d') if target_date else None
+        notifier.send_screening_report(results, save_to_file=True, report_date=report_date_str)
+
+        # 自动分析（如果启用）
+        if args.auto_analyze:
+            logger.info("开始对选中股票进行深度分析...")
+
+            # 创建分析流程
+            pipeline = StockAnalysisPipeline(
+                config=config,
+                max_workers=args.workers or config.max_workers
+            )
+
+            # 分析选中的股票
+            codes_to_analyze = [r.code for r in results]
+            analysis_results = pipeline.run(
+                stock_codes=codes_to_analyze,
+                dry_run=False,
+                send_notification=not args.no_notify
+            )
+
+            logger.info(f"深度分析完成: {len(analysis_results)} 只股票")
+
+            return results
+
+        return results
+
+    except Exception as e:
+        logger.exception(f"选股执行失败: {e}")
+        if notifier.is_available():
+            notifier.send(f"🎯 全市场选股失败\n\n错误: {str(e)[:100]}")
+        return None
+
+
+def run_strategy_screening(
+        config: Config,
+        args: argparse.Namespace,
+        notifier: NotificationService
+) -> Optional[List]:
+    """
+    执行策略选股（使用 StockTradebyZ 战法）
+
+    Args:
+        config: 配置对象
+        args: 命令行参数
+        notifier: 通知服务
+
+    Returns:
+        选股结果列表
+    """
+    logger.info("=" * 60)
+    logger.info("开始执行策略选股（StockTradebyZ 战法）")
+    logger.info("=" * 60)
+
+    try:
+        from screeners.strategy_screener import StrategyScreener
+
+        # 创建策略选股器
+        screener = StrategyScreener(
+            data_dir=args.data_dir or "./data",
+            config_file=args.strategy_config
+        )
+
+        # 执行选股
+        if args.strategy:
+            # 运行指定策略
+            selected = screener.run_strategy(args.strategy)
+            strategy_results = {args.strategy: selected}
+        else:
+            # 运行所有策略
+            strategy_results = screener.run_all_strategies()
+
+        # 获取所有选中的股票（去重）
+        all_selected = set()
+        for stocks in strategy_results.values():
+            all_selected.update(stocks)
+
+        all_selected = sorted(list(all_selected))
+
+        if not all_selected:
+            logger.info("未选出符合条件的股票")
+            if notifier.is_available():
+                notifier.send("🎯 策略选股完成\n\n今日未选出符合条件的股票。")
+            return []
+
+        # 生成报告
+        report = screener.format_report(strategy_results)
+        logger.info(f"\n{report}")
+
+        # 保存报告
+        report_dir = Path("./reports")
+        report_dir.mkdir(exist_ok=True)
+        report_file = report_dir / f"strategy_screening_{datetime.now().strftime('%Y%m%d')}.txt"
+        with open(report_file, 'w', encoding='utf-8') as f:
+            f.write(report)
+        logger.info(f"报告已保存: {report_file}")
+
+        # 发送通知
+        if notifier.is_available():
+            # 生成精简版通知
+            lines = [
+                "🎯 策略选股完成",
+                f"📅 {datetime.now().strftime('%Y-%m-%d')}",
+                "",
+                f"📊 共选出 {len(all_selected)} 只股票",
+                ""
+            ]
+
+            for strategy_name, stocks in strategy_results.items():
+                if stocks:
+                    lines.append(f"• {strategy_name}: {len(stocks)} 只")
+
+            lines.append("")
+            lines.append(f"股票代码: {', '.join(all_selected)}")
+
+            notifier.send("\n".join(lines))
+
+        # 自动分析（如果启用）
+        if args.auto_analyze:
+            logger.info("开始对选中股票进行深度分析...")
+
+            # 创建分析流程
+            pipeline = StockAnalysisPipeline(
+                config=config,
+                max_workers=args.workers or config.max_workers
+            )
+
+            # 分析选中的股票
+            analysis_results = pipeline.run(
+                stock_codes=all_selected,
+                dry_run=False,
+                send_notification=not args.no_notify
+            )
+
+            logger.info(f"深度分析完成: {len(analysis_results)} 只股票")
+
+        return all_selected
+
+    except ImportError as e:
+        logger.error(f"无法导入策略选股模块: {e}")
+        logger.error("请确保已将 StockTradebyZ 的相关文件复制到项目目录")
+        logger.error("参考 INTEGRATION_GUIDE.md 完成整合")
+        return None
+    except Exception as e:
+        logger.exception(f"策略选股执行失败: {e}")
+        if notifier.is_available():
+            notifier.send(f"🎯 策略选股失败\n\n错误: {str(e)[:100]}")
+        return None
 
 
 def run_full_analysis(

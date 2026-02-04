@@ -153,7 +153,24 @@ class Config:
     max_retries: int = 3
     retry_base_delay: float = 1.0
     retry_max_delay: float = 30.0
-    
+
+    # === 选股器配置 ===
+    screener_enabled: bool = False  # 是否启用选股
+    screener_min_trend_strength: int = 60  # 最小趋势强度
+    screener_max_bias_ma5: float = 5.0  # 最大乖离率（%）
+    screener_min_volume_ratio: float = 0.8  # 最小量比
+    screener_max_volume_ratio: float = 3.0  # 最大量比
+    screener_bullish_only: bool = True  # 仅选择多头排列
+    screener_min_price: float = 5.0  # 最低价格
+    screener_max_price: float = 1000.0  # 最高价格
+    screener_exclude_st: bool = True  # 排除ST股票
+    screener_exclude_new_listed_days: int = 60  # 排除新上市天数
+    screener_ai_enabled: bool = True  # 启用AI筛选
+    screener_max_candidates: int = 20  # 最大候选数
+    screener_final_selection: int = 5  # 最终选中数
+    screener_batch_size: int = 100  # 分批大小
+    screener_request_delay: float = 2.0  # 请求延迟（秒）
+
     # === WebUI 配置 ===
     webui_enabled: bool = False
     webui_host: str = "127.0.0.1"
@@ -334,6 +351,21 @@ class Config:
             schedule_enabled=os.getenv('SCHEDULE_ENABLED', 'false').lower() == 'true',
             schedule_time=os.getenv('SCHEDULE_TIME', '18:00'),
             market_review_enabled=os.getenv('MARKET_REVIEW_ENABLED', 'true').lower() == 'true',
+            screener_enabled=os.getenv('SREENER_ENABLED', 'false').lower() == 'true',
+            screener_min_trend_strength=int(os.getenv('SREENER_MIN_TRENGTH', '60')),
+            screener_max_bias_ma5=float(os.getenv('SREENER_MAX_BIAS_MA5', '5.0')),
+            screener_min_volume_ratio=float(os.getenv('SREENER_MIN_VOLUME_RATIO', '0.8')),
+            screener_max_volume_ratio=float(os.getenv('SREENER_MAX_VOLUME_RATIO', '3.0')),
+            screener_bullish_only=os.getenv('SREENER_BULLISH_ONLY', 'true').lower() == 'true',
+            screener_min_price=float(os.getenv('SREENER_MIN_PRICE', '5.0')),
+            screener_max_price=float(os.getenv('SREENER_MAX_PRICE', '1000.0')),
+            screener_exclude_st=os.getenv('SREENER_EXCLUDE_ST', 'true').lower() == 'true',
+            screener_exclude_new_listed_days=int(os.getenv('SREENER_EXCLUDE_NEW_LISTED_DAYS', '60')),
+            screener_ai_enabled=os.getenv('SREENER_AI_ENABLED', 'true').lower() == 'true',
+            screener_max_candidates=int(os.getenv('SREENER_MAX_CANDIDATES', '20')),
+            screener_final_selection=int(os.getenv('SREENER_FINAL_SELECTION', '5')),
+            screener_batch_size=int(os.getenv('SREENER_BATCH_SIZE', '100')),
+            screener_request_delay=float(os.getenv('SREENER_REQUEST_DELAY', '2.0')),
             webui_enabled=os.getenv('WEBUI_ENABLED', 'false').lower() == 'true',
             webui_host=os.getenv('WEBUI_HOST', '127.0.0.1'),
             webui_port=int(os.getenv('WEBUI_PORT', '8000')),
