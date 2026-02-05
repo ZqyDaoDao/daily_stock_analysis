@@ -49,7 +49,6 @@ from services.notification import NotificationService, send_daily_report
 from services.search_service import SearchService, SearchResponse
 from core.stock_analyzer import StockTrendAnalyzer, TrendAnalysisResult
 from core.market_analyzer import MarketAnalyzer
-from screeners.stock_screener import StockScreener, ScreeningMode
 
 # 配置日志格式
 LOG_FORMAT = '%(asctime)s | %(levelname)-8s | %(name)-20s | %(message)s'
@@ -497,7 +496,15 @@ class StockAnalysisPipeline:
             分析结果列表
         """
         start_time = time.time()
-        
+
+        # 预加载全市场行情数据（用于获取股票名称）
+        logger.info("预加载全市场行情数据...")
+        try:
+            self.akshare_fetcher.get_realtime_quote("000001")  # 触发缓存
+            logger.info("全市场行情数据预加载完成")
+        except Exception as e:
+            logger.warning(f"预加载全市场数据失败: {e}")
+
         # 使用配置中的股票列表
         if stock_codes is None:
             stock_codes = self.config.stock_list
@@ -692,26 +699,6 @@ def parse_arguments() -> argparse.Namespace:
     )
 
     parser.add_argument(
-        '--screen',
-        action='store_true',
-        help='运行全市场选股'
-    )
-
-    parser.add_argument(
-        '--screen-mode',
-        type=str,
-        default='full',
-        choices=['tech_only', 'ai_only', 'full'],
-        help='选股模式：tech_only(仅技术), ai_only(仅AI), full(完整流程)'
-    )
-
-    parser.add_argument(
-        '--auto-analyze',
-        action='store_true',
-        help='选股后自动对选中股票进行深度分析'
-    )
-
-    parser.add_argument(
         '--force-refresh',
         action='store_true',
         help='强制刷新（忽略缓存）'
@@ -800,89 +787,19 @@ def run_stock_screening(
     config: Config,
     args: argparse.Namespace,
     notifier: NotificationService,
-    target_date: Optional[date] = None  # 新增参数
+    target_date: Optional[date] = None
 ) -> Optional[List]:
     """
     执行全市场选股
 
-    Args:
-        config: 配置对象
-        args: 命令行参数
-        notifier: 通知服务
-        target_date: 目标选股日期（None表示今天）
-
-    Returns:
-        选股结果列表
+    注意：此功能已被禁用，stock_screener.py 已删除。
+    如需选股功能，请使用 --strategy-screen 参数调用策略选股。
     """
-    logger.info("=" * 60)
-    logger.info("开始执行全市场选股")
-    logger.info("=" * 60)
-
-    try:
-        # 创建选股器
-        screener = StockScreener(
-            max_workers=args.workers or config.max_workers
-        )
-
-        # 确定选股模式
-        mode_map = {
-            'tech_only': ScreeningMode.TECH_ONLY,
-            'ai_only': ScreeningMode.AI_ONLY,
-            'full': ScreeningMode.FULL,
-        }
-        mode = mode_map.get(args.screen_mode, ScreeningMode.FULL)
-
-        logger.info(f"选股模式: {mode.value}")
-        logger.info(f"自动分析: {'是' if args.auto_analyze else '否'}")
-
-        # 执行选股
-        results = screener.screen_market(
-            mode=mode,
-            force_refresh=args.force_refresh,
-            target_date=target_date  # 新增参数
-        )
-
-        if not results:
-            logger.info("未选出符合条件的股票")
-            if notifier.is_available():
-                notifier.send("🎯 全市场选股完成\n\n今日未选出符合条件的股票。")
-            return []
-
-        # 发送选股报告
-        logger.info("生成选股报告...")
-        # 将 target_date 转换为字符串格式
-        report_date_str = target_date.strftime('%Y-%m-%d') if target_date else None
-        notifier.send_screening_report(results, save_to_file=True, report_date=report_date_str)
-
-        # 自动分析（如果启用）
-        if args.auto_analyze:
-            logger.info("开始对选中股票进行深度分析...")
-
-            # 创建分析流程
-            pipeline = StockAnalysisPipeline(
-                config=config,
-                max_workers=args.workers or config.max_workers
-            )
-
-            # 分析选中的股票
-            codes_to_analyze = [r.code for r in results]
-            analysis_results = pipeline.run(
-                stock_codes=codes_to_analyze,
-                dry_run=False,
-                send_notification=not args.no_notify
-            )
-
-            logger.info(f"深度分析完成: {len(analysis_results)} 只股票")
-
-            return results
-
-        return results
-
-    except Exception as e:
-        logger.exception(f"选股执行失败: {e}")
-        if notifier.is_available():
-            notifier.send(f"🎯 全市场选股失败\n\n错误: {str(e)[:100]}")
-        return None
+    logger.error("全市场选股功能已被禁用（stock_screener.py 已删除）")
+    logger.error("如需选股功能，请使用 --strategy-screen 参数调用策略选股")
+    if notifier.is_available():
+        notifier.send("⚠️ 全市场选股功能已被禁用\n\n请使用 --strategy-screen 参数调用策略选股")
+    return None
 
 
 def run_strategy_screening(
@@ -1113,23 +1030,7 @@ def main() -> int:
             run_market_review(notifier, analyzer, search_service)
             return 0
 
-        # 模式2: 全市场选股
-        if args.screen:
-            logger.info("模式: 全市场选股")
-            notifier = NotificationService()
-
-            # 初始化搜索服务（如果有配置）
-            search_service = None
-            if config.tavily_api_keys or config.serpapi_keys:
-                search_service = SearchService(
-                    tavily_keys=config.tavily_api_keys,
-                    serpapi_keys=config.serpapi_keys
-                )
-
-            run_stock_screening(config, args, notifier, target_date)
-            return 0
-
-        # 模式2.5: 策略选股（StockTradebyZ 战法）
+        # 模式2: 策略选股（StockTradebyZ 战法）
         if args.strategy_screen:
             logger.info("模式: 策略选股（StockTradebyZ 战法）")
             notifier = NotificationService()
@@ -1142,7 +1043,7 @@ def main() -> int:
             logger.info("模式: 定时任务")
             logger.info(f"每日执行时间: {config.schedule_time}")
             
-            from scheduler import run_with_schedule
+            from services.scheduler import run_with_schedule
             
             def scheduled_task():
                 run_full_analysis(config, args, stock_codes)

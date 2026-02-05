@@ -15,7 +15,6 @@ from .akshare_fetcher import AkshareFetcher
 from .tushare_fetcher import TushareFetcher
 from .baostock_fetcher import BaostockFetcher
 from .yfinance_fetcher import YfinanceFetcher
-from .data_cache_manager import DataCacheManager, get_cache_manager
 
 __all__ = [
     'BaseFetcher',
@@ -24,6 +23,4 @@ __all__ = [
     'TushareFetcher',
     'BaostockFetcher',
     'YfinanceFetcher',
-    'DataCacheManager',
-    'get_cache_manager',
 ]
